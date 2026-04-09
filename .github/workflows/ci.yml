@@ -1,4 +1,8 @@
 name: CI
+
+permissions:
+  contents: read
+  
 on:
   workflow_dispatch:
   push:
@@ -21,6 +25,8 @@ jobs:
         cache: 'npm'
 
     - run: npm ci
+
+    - run: npm run typecheck
 
     - run: npm run lint
 
