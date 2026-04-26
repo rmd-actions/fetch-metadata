@@ -1,4 +1,4 @@
-import { Context } from '@actions/github/lib/context'
+import type { Context } from './github-context'
 
 export function parseNwo (nwo: string): {owner: string; repo: string} {
   const [owner, name] = nwo.split('/')
@@ -23,4 +23,9 @@ export function getBranchNames (context: Context): branchNames {
 export function getBody (context: Context): string {
   const { pull_request: pr } = context.payload
   return pr?.body || ''
+}
+
+export function getTitle (context: Context): string {
+  const { pull_request: pr } = context.payload
+  return pr?.title || ''
 }
