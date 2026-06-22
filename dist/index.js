@@ -27723,6 +27723,19 @@ function getProxyFetch(destinationUrl) {
 function getApiBaseUrl() {
   return process.env["GITHUB_API_URL"] || "https://api.github.com";
 }
+function getUserAgentWithOrchestrationId(baseUserAgent) {
+  var _a;
+  const orchId = (_a = process.env["ACTIONS_ORCHESTRATION_ID"]) === null || _a === void 0 ? void 0 : _a.trim();
+  if (orchId) {
+    const sanitizedId = orchId.replace(/[^a-z0-9_.-]/gi, "_");
+    const tag = `actions_orchestration_id/${sanitizedId}`;
+    if (baseUserAgent === null || baseUserAgent === void 0 ? void 0 : baseUserAgent.includes(tag))
+      return baseUserAgent;
+    const ua = baseUserAgent ? `${baseUserAgent} ` : "";
+    return `${ua}${tag}`;
+  }
+  return baseUserAgent;
+}
 
 // node_modules/universal-user-agent/index.js
 function getUserAgent() {
@@ -31334,6 +31347,10 @@ function getOctokitOptions(token, options) {
   if (auth2) {
     opts.auth = auth2;
   }
+  const userAgent2 = getUserAgentWithOrchestrationId(opts.userAgent);
+  if (userAgent2) {
+    opts.userAgent = userAgent2;
+  }
   return opts;
 }
 
@@ -31454,9 +31471,11 @@ function branchNameToDirectoryName(chunks, delimiter, updatedDependencies, depen
   });
   return `/${chunks.slice(sliceStart, sliceEnd).join("/")}`;
 }
-async function parse3(commitMessage, body, branchName, mainBranch, lookup, getScore) {
+async function parse3(commitMessage, body, branchName, mainBranch, lookup, getScore, title) {
+  const updateRegex = /\b[Uu]pdate .* requirement from \S*? ?(?<from>v?\d\S*) to \S*? ?(?<to>v?\d\S*)/;
   const bumpFragment = commitMessage.match(/^Bumps .* from (?<from>v?\d[^ ]*) to (?<to>v?\d[^ ]*)\.$/m);
-  const updateFragment = commitMessage.match(/^Update .* requirement from \S*? ?(?<from>v?\d\S*) to \S*? ?(?<to>v?\d\S*)/m);
+  const updateFragment = commitMessage.split("\n")[0].match(updateRegex);
+  const titleUpdateFragment = !bumpFragment && !updateFragment && title ? title.match(updateRegex) : null;
   const yamlFragment = commitMessage.match(/^-{3}\n(?<dependencies>[\S|\s]*?)\n^\.{3}\n/m);
   const groupName = commitMessage.match(/dependency-group:\s(?<name>\S*)/m);
   const newMaintainer = !!body.match(/Maintainer changes/m);
@@ -31466,8 +31485,8 @@ async function parse3(commitMessage, body, branchName, mainBranch, lookup, getSc
     const data = YAML.parse(yamlFragment.groups.dependencies);
     const delim = branchName[10];
     const chunks = branchName.split(delim);
-    const prev = bumpFragment?.groups?.from ?? (updateFragment?.groups?.from ?? "");
-    const next = bumpFragment?.groups?.to ?? (updateFragment?.groups?.to ?? "");
+    const prev = bumpFragment?.groups?.from ?? updateFragment?.groups?.from ?? titleUpdateFragment?.groups?.from ?? "";
+    const next = bumpFragment?.groups?.to ?? updateFragment?.groups?.to ?? titleUpdateFragment?.groups?.to ?? "";
     const dependencyGroup = groupName?.groups?.name ?? "";
     if (data["updated-dependencies"]) {
       const updatedVersions = parseMetadataLinks(commitMessage);
@@ -31624,6 +31643,10 @@ function getBody(context3) {
   const { pull_request: pr } = context3.payload;
   return pr?.body || "";
 }
+function getTitle(context3) {
+  const { pull_request: pr } = context3.payload;
+  return pr?.title || "";
+}
 
 // src/main.ts
 async function run() {
@@ -31639,6 +31662,7 @@ async function run() {
     const commitMessage = await getMessage(githubClient, context2, getBooleanInput("skip-commit-verification"), getBooleanInput("skip-verification"));
     const branchNames = getBranchNames(context2);
     const body = getBody(context2);
+    const title = getTitle(context2);
     let alertLookup;
     if (getInput("alert-lookup")) {
       alertLookup = (name, version, directory) => getAlert(name, version, directory, githubClient, context2);
@@ -31646,7 +31670,7 @@ async function run() {
     const scoreLookup = getInput("compat-lookup") ? getCompatibility : void 0;
     if (commitMessage) {
       info("Parsing Dependabot metadata");
-      const updatedDependencies = await parse3(commitMessage, body, branchNames.headName, branchNames.baseName, alertLookup, scoreLookup);
+      const updatedDependencies = await parse3(commitMessage, body, branchNames.headName, branchNames.baseName, alertLookup, scoreLookup, title);
       if (updatedDependencies.length > 0) {
         set(updatedDependencies);
       } else {
