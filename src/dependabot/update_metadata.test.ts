@@ -1,5 +1,83 @@
 import * as updateMetadata from './update_metadata'
 
+describe('custom branch prefixes with the default separator', () => {
+  const groupedCommit = `Bumps the dependencies group with 2 updates.
+
+Updates \`actions/checkout\` from 6.0.0 to 7.0.0
+Updates \`actions/setup-node\` from 6.0.0 to 7.0.0
+
+---
+updated-dependencies:
+- dependency-name: actions/checkout
+  dependency-type: direct:production
+  update-type: version-update:semver-major
+  dependency-group: dependencies
+- dependency-name: actions/setup-node
+  dependency-type: direct:production
+  update-type: version-update:semver-major
+  dependency-group: dependencies
+...
+`
+
+  test.each(['chore', 'deps', 'dependabot-custom', 'team_deps'])(
+    'parses grouped updates with the %s prefix', async (prefix) => {
+      const suffix = '/github-actions/dependencies-fca3083807'
+      const expected = await updateMetadata.parse(groupedCommit, '', `dependabot${suffix}`, 'main')
+      const actual = await updateMetadata.parse(groupedCommit, '', `${prefix}${suffix}`, 'main')
+
+      expect(actual).toEqual(expected)
+      expect(actual.map(dependency => dependency.dependencyName)).toEqual(['actions/checkout', 'actions/setup-node'])
+      expect(actual[0]).toMatchObject({
+        directory: '/',
+        packageEcosystem: 'github-actions',
+        dependencyGroup: 'dependencies',
+        prevVersion: '6.0.0',
+        newVersion: '7.0.0',
+        updateType: 'version-update:semver-major'
+      })
+    }
+  )
+
+  test('preserves nested directories, scoped dependencies and lookup arguments', async () => {
+    const commitMessage = `Bumps [@types/node](https://github.com/DefinitelyTyped/DefinitelyTyped) from 23.0.0 to 24.0.0.
+
+---
+updated-dependencies:
+- dependency-name: '@types/node'
+  dependency-type: direct:development
+...
+`
+    const getAlert = jest.fn().mockResolvedValue({ alertState: 'FIXED', ghsaId: 'GHSA-test', cvss: 4.6 })
+    const getScore = jest.fn().mockResolvedValue(43)
+    const actual = await updateMetadata.parse(
+      commitMessage, '', 'team-deps/npm_and_yarn/packages/api/types/node-24.0.0', 'main', getAlert, getScore
+    )
+
+    expect(actual).toHaveLength(1)
+    expect(actual[0]).toMatchObject({
+      dependencyName: '@types/node',
+      directory: '/packages/api',
+      packageEcosystem: 'npm_and_yarn',
+      prevVersion: '23.0.0',
+      newVersion: '24.0.0',
+      compatScore: 43,
+      alertState: 'FIXED'
+    })
+    expect(getAlert).toHaveBeenCalledWith('@types/node', '23.0.0', '/packages/api')
+    expect(getScore).toHaveBeenCalledWith('@types/node', '23.0.0', '24.0.0', 'npm_and_yarn')
+  })
+
+  test.each(['', 'chore', 'chore/', 'chore//package', 'chore/npm/', '/npm/package'])(
+    'does not parse an incomplete custom branch structure: %s', async (branchName) => {
+      expect(await updateMetadata.parse(groupedCommit, '', branchName, 'main')).toEqual([])
+    }
+  )
+
+  test('still requires a metadata fragment', async () => {
+    expect(await updateMetadata.parse('An ordinary commit', '', 'chore/npm/package', 'main')).toEqual([])
+  })
+})
+
 test('it returns an empty array for a blank string', async () => {
   const getAlert = async () => Promise.resolve({ alertState: 'DISMISSED', ghsaId: 'GHSA-III-BBB', cvss: 4.6 })
   const getScore = async () => Promise.resolve(43)
@@ -534,6 +612,39 @@ updated-dependencies:
   expect(updatedDependencies[1].dependencyName).toEqual('org.apache.commons:commons-compress')
   expect(updatedDependencies[1].prevVersion).toEqual('')
   expect(updatedDependencies[1].newVersion).toEqual('1.27.1')
+})
+
+test('it handles grouped Maven updates with the format from issue 602', async () => {
+  const commitMessage = `NOJIRA | Dependabot | Bump io.netty:netty-common
+Bumps the maven group in /xxx_core with 1 update: [io.netty:netty-common](https://github.com/netty/netty).
+
+Updates \`io.netty:netty-common\` from 4.1.115.Final to 4.1.118.Final
+- [Commits](https://github.com/netty/netty/compare/netty-4.1.115.Final...netty-4.1.118.Final)
+
+---
+updated-dependencies:
+- dependency-name: io.netty:netty-common
+  dependency-type: direct:production
+  dependency-group: maven
+...
+
+Signed-off-by: dependabot[bot] <support@github.com>`
+
+  const updatedDependencies = await updateMetadata.parse(
+    commitMessage, '', 'dependabot/maven/xxx_core/maven-abc123', 'main'
+  )
+
+  expect(updatedDependencies).toHaveLength(1)
+  expect(updatedDependencies[0]).toMatchObject({
+    dependencyName: 'io.netty:netty-common',
+    dependencyType: 'direct:production',
+    dependencyGroup: 'maven',
+    directory: '/xxx_core',
+    packageEcosystem: 'maven',
+    prevVersion: '4.1.115.Final',
+    newVersion: '4.1.118.Final',
+    updateType: 'version-update:semver-patch'
+  })
 })
 
 test('it handles new versions from YAML', async () => {
