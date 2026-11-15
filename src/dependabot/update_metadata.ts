@@ -32,8 +32,8 @@ export interface scoreLookup {
 }
 
 function branchNameToDirectoryName (chunks: string[], delimiter: string, updatedDependencies: any, dependencyGroup: string): string {
-  // We can always slice after the first 2 pieces, because they will always contain "dependabot" followed by the name
-  // of the package ecosystem. e.g. "dependabot/npm_and_yarn".
+  // The first 2 pieces contain the branch prefix and package ecosystem,
+  // e.g. "dependabot/npm_and_yarn" or "chore/npm_and_yarn".
   const sliceStart = 2
   let sliceEnd = chunks.length
 
@@ -77,11 +77,14 @@ export async function parse (commitMessage: string, body: string, branchName: st
   const lookupFn = lookup ?? (() => Promise.resolve({ alertState: '', ghsaId: '', cvss: 0 }))
   const scoreFn = getScore ?? (() => Promise.resolve(0))
 
-  if (yamlFragment?.groups && branchName.startsWith('dependabot')) {
+  const slashSeparated = /^[^/]+\/[^/]+\/.+/.test(branchName)
+
+  if (yamlFragment?.groups && (slashSeparated || branchName.startsWith('dependabot'))) {
     const data = YAML.parse(yamlFragment.groups.dependencies)
 
-    // Since we are on the `dependabot` branch (9 letters), the 10th letter in the branch name is the delimiter
-    const delim = branchName[10]
+    // Custom prefixes use the conventional PREFIX/ECOSYSTEM/... structure.
+    // Preserve alternate separators for branches with the default prefix.
+    const delim = slashSeparated ? '/' : branchName[10]
     const chunks = branchName.split(delim)
     const prev = bumpFragment?.groups?.from ?? updateFragment?.groups?.from ?? titleUpdateFragment?.groups?.from ?? ''
     const next = bumpFragment?.groups?.to ?? updateFragment?.groups?.to ?? titleUpdateFragment?.groups?.to ?? ''
@@ -98,8 +101,14 @@ export async function parse (commitMessage: string, body: string, branchName: st
         nameCounters.set(dependencyName, nameIndex + 1)
         const updatedVersionList = updatedVersions.get(dependencyName)
         const updatedVersion = updatedVersionList?.[nameIndex]
-        const lastVersion = updatedVersion?.prevVersion || (index === 0 ? prev : '')
-        const nextVersion = dependency['dependency-version'] || updatedVersion?.newVersion || (index === 0 ? next : '')
+        const dependencyVersion = dependency['dependency-version']
+        // Digest-only Docker updates code-format the digests while dependency-version contains the unchanged tag.
+        const isDockerDigestOnlyUpdate = chunks[1] === 'docker' &&
+          !dependency['update-type'] &&
+          isMarkdownCodeSpan(updatedVersion?.prevVersion) &&
+          isNewVersionChanged(dependencyVersion, updatedVersion?.newVersion)
+        const lastVersion = isDockerDigestOnlyUpdate ? dependencyVersion : updatedVersion?.prevVersion || (index === 0 ? prev : '')
+        const nextVersion = dependencyVersion || updatedVersion?.newVersion || (index === 0 ? next : '')
         const updateType = dependency['update-type'] || calculateUpdateType(lastVersion, nextVersion)
         return {
           dependencyName: dependency['dependency-name'],
@@ -154,6 +163,16 @@ function parseMetadataLinks(commitMessage: string): Map<string, dependencyVersio
     }
   }
   return updates
+}
+
+function isMarkdownCodeSpan (value?: string): value is string {
+  return !!value && value.startsWith('`') && value.endsWith('`')
+}
+
+function isNewVersionChanged (dependencyVersion?: string, newVersion?: string): boolean {
+  return !!dependencyVersion &&
+    isMarkdownCodeSpan(newVersion) &&
+    !dependencyVersion.startsWith(newVersion.slice(1, -1))
 }
 
 export function calculateUpdateType (lastVersion: string, nextVersion: string) {
